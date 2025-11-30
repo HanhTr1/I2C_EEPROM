@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="CLionExternalBuildManager">
+    <target id="87f76fb5-6203-4348-a7b1-a805f15aa675" name="I2C_EEPROM" defaultType="TOOL">
+      <configuration id="f22e0c12-45dc-4f41-a4c0-17d74fb93d80" name="I2C_EEPROM" toolchainName="MinGW" />
+    </target>
+  </component>
+</project>
