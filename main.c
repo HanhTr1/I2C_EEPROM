@@ -29,7 +29,7 @@
 #define POLL_MS 10
 #define DEBOUNCE_TICKS 5
 #define MICROSECOND_TO_SECOND 1000000
-
+#define TIMEOUT 5000 //ms
 #define LED_BIT(n) (1u << (n))
 
 
@@ -63,6 +63,75 @@ static ledstate_t led_state;
 static button_sm_t buttons[BTN_COUNT];
 static uint8_t pressed_level = 0;
 
+void set_led_state(ledstate_t *ls, uint8_t value);
+
+
+bool led_state_is_valid(ledstate_t *ls);
+
+int eeprom_write_bytes(uint32_t addr, const uint8_t *buf, size_t len);
+
+
+eeprom_status_t eeprom_read_bytes(uint32_t addr, uint8_t *buf, size_t len);
+void button_sm_init(button_sm_t *b, uint gpio);
+
+void button_sm_sample(button_sm_t *b);
+
+void update_leds(void);
+
+void setup_leds(void);
+
+void setup_i2c(void);
+void setup_buttons(void);
+
+void print_led_state(void);
+
+
+
+int main() {
+    stdio_init_all();
+    sleep_ms(200);
+    printf("Start!\n");
+
+    setup_i2c();
+    setup_leds();
+    setup_buttons();
+    for (int i = 0; i < BTN_COUNT; i++) {
+        button_sm_init(&buttons[i], btn_pins[i]);
+    }
+
+
+    // read LED state from EEPROM
+    if (eeprom_read_bytes(EEPROM_STORE_ADDR, (uint8_t*)&led_state, sizeof(ledstate_t)) == EEPROM_OK
+        && led_state_is_valid(&led_state)) {
+        printf("Loaded LED state from EEPROM.\n");
+    } else {
+        set_led_state(&led_state, LED_BIT(1)); // default middle LED
+        eeprom_write_bytes(EEPROM_STORE_ADDR, (uint8_t*)&led_state, sizeof(ledstate_t));
+        printf("Using default LED state.\n");
+    }
+
+    update_leds();
+
+    bool prev_btn_state[BTN_COUNT] = {0};
+
+    while (true) {
+        for (int i=0;i<BTN_COUNT;i++) {
+            button_sm_sample(&buttons[i]);
+        }
+        for (int i=0; i<BTN_COUNT; i++) {
+            bool pressed =buttons[i].pressed_event;
+            if (pressed && prev_btn_state[i] == false) {
+                set_led_state(&led_state, led_state.state ^ LED_BIT(i));
+                eeprom_write_bytes(EEPROM_STORE_ADDR, (uint8_t*)&led_state, sizeof(ledstate_t));
+                update_leds();
+                print_led_state();
+            }
+            prev_btn_state[i] = pressed;
+        }
+
+        sleep_ms(POLL_MS);
+    }
+}
 void set_led_state(ledstate_t *ls, uint8_t value) {
     ls->state = value;
     ls->not_state = ~value;
@@ -75,17 +144,17 @@ bool led_state_is_valid(ledstate_t *ls) {
 
 int eeprom_write_bytes(uint32_t addr, const uint8_t *buf, size_t len) {
     const uint32_t PAGE_SIZE = 64;  // AT24C256 page size
-    size_t remaining = len;
-    size_t offset = 0;
+    size_t remaining_byte = len;
+    size_t position = 0;
 
-    while (remaining > 0) {
-        uint32_t current_addr = addr + offset;
-        uint32_t page_offset = current_addr % PAGE_SIZE;
-        uint32_t space_in_page = PAGE_SIZE - page_offset;
+    while (remaining_byte > 0) {
+        uint32_t current_addr = addr + position;
+        uint32_t pos_in_page = current_addr % PAGE_SIZE;
+        uint32_t space_in_page = PAGE_SIZE - pos_in_page;
 
         uint32_t chunk;
-        if (remaining < space_in_page) {
-            chunk = remaining;
+        if (remaining_byte < space_in_page) {
+            chunk = remaining_byte;
         } else {
             chunk = space_in_page;
         }
@@ -95,7 +164,7 @@ int eeprom_write_bytes(uint32_t addr, const uint8_t *buf, size_t len) {
         tx[1] = (uint8_t)(current_addr & 0xFF);  // LSB addr
 
         for (uint32_t i = 0; i < chunk; i++) {
-            tx[2 + i] = buf[offset + i];
+            tx[2 + i] = buf[position + i];
         }
 
         int w = i2c_write_blocking(I2C_PORT, EEPROM_I2C_ADDR, tx, 2 + chunk, false);
@@ -103,25 +172,22 @@ int eeprom_write_bytes(uint32_t addr, const uint8_t *buf, size_t len) {
             return EEPROM_ERROR_I2C_WRITE;
         }
 
-        // ACK polling
         absolute_time_t start_time = get_absolute_time();
-        int probe = 0;
-        while ((probe != 1) && (absolute_time_diff_us(get_absolute_time(), start_time) < 5000)) { // 5 ms timeout
-            uint8_t dummy = 0;
-            probe = i2c_write_blocking(I2C_PORT, EEPROM_I2C_ADDR, &dummy, 1, false);
-            if (probe != 1) {
+        int finished = 0;
+        while ((finished != 1) && (absolute_time_diff_us(get_absolute_time(), start_time) < TIMEOUT)) {
+            uint8_t flag = 0;
+            finished = i2c_write_blocking(I2C_PORT, EEPROM_I2C_ADDR, &flag, 1, false);
+            if (finished != 1) {
                 sleep_ms(1);
             }
         }
-
-        if (probe != 1) {
+        if (finished != 1) {
             return EEPROM_ERROR_I2C_TIMEOUT;
         }
 
-        remaining -= chunk;
-        offset += chunk;
+        remaining_byte -= chunk;
+        position += chunk;
     }
-
     return 0;
 }
 
@@ -177,23 +243,11 @@ void button_sm_sample(button_sm_t *b) {
 void update_leds(void) {
     for (int i = 0; i < LED_COUNT; i++) {
         if (led_state.state & LED_BIT(i)) {
-            gpio_put(led_pins[i], 1); // on
+            gpio_put(led_pins[i], 1);
         } else {
-            gpio_put(led_pins[i], 0); // off
+            gpio_put(led_pins[i], 0);
         }
     }
-}
-
-
-
-void detect_button(void) {
-    for (int i=0;i<BTN_COUNT;i++) {
-        gpio_init(btn_pins[i]);
-        gpio_set_dir(btn_pins[i], GPIO_IN);
-        gpio_pull_up(btn_pins[i]);
-    }
-    pressed_level=0;
-    printf("Button pressed active low \n");
 }
 
 void setup_leds(void) {
@@ -211,6 +265,14 @@ void setup_i2c(void) {
     gpio_pull_up(I2C_SDA_PIN);
     gpio_pull_up(I2C_SCL_PIN);
 }
+void setup_buttons(void) {
+    for (int i=0; i<BTN_COUNT; i++) {
+        gpio_init(btn_pins[i]);
+        gpio_set_dir(btn_pins[i], GPIO_IN);
+        gpio_pull_up(btn_pins[i]);
+    }
+}
+
 void print_led_state(void) {
     uint64_t t_us = time_us_64();
     uint32_t t_s = t_us / MICROSECOND_TO_SECOND;
@@ -236,52 +298,4 @@ void print_led_state(void) {
         }
     }
     printf("}\n");
-}
-
-
-
-int main() {
-    stdio_init_all();
-    sleep_ms(200);
-    printf("Start!\n");
-
-    setup_i2c();
-    setup_leds();
-    detect_button();
-    for (int i = 0; i < BTN_COUNT; i++) {
-        button_sm_init(&buttons[i], btn_pins[i]);
-    }
-
-
-    // read LED state from EEPROM
-    if (eeprom_read_bytes(EEPROM_STORE_ADDR, (uint8_t*)&led_state, sizeof(ledstate_t)) == EEPROM_OK
-        && led_state_is_valid(&led_state)) {
-        printf("Loaded LED state from EEPROM.\n");
-    } else {
-        set_led_state(&led_state, LED_BIT(1)); // default middle LED
-        eeprom_write_bytes(EEPROM_STORE_ADDR, (uint8_t*)&led_state, sizeof(ledstate_t));
-        printf("Using default LED state.\n");
-    }
-
-    update_leds();
-
-    bool prev_btn_state[BTN_COUNT] = {0};
-
-    while (true) {
-        for (int i=0;i<BTN_COUNT;i++) {
-            button_sm_sample(&buttons[i]);
-        }
-        for (int i=0; i<BTN_COUNT; i++) {
-            bool pressed =buttons[i].pressed_event;
-            if (pressed && prev_btn_state[i] == false) {
-                set_led_state(&led_state, led_state.state ^ LED_BIT(i));
-                eeprom_write_bytes(EEPROM_STORE_ADDR, (uint8_t*)&led_state, sizeof(ledstate_t));
-                update_leds();
-                print_led_state();
-            }
-            prev_btn_state[i] = pressed;
-        }
-
-        sleep_ms(POLL_MS);
-    }
 }
