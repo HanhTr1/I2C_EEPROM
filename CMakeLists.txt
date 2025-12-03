@@ -24,23 +24,39 @@ add_compile_options(-Wall
         -Wno-unused-function # we have some for the docs that aren't called
         -Wno-maybe-uninitialized
 )
-
-# Tell CMake where to find the executable source file
-add_executable(${PROJECT_NAME}
-        main.c
+# Common source files
+set(COMMON_SRCS
+        functions1.c
 )
-
-# Create map/bin/hex/uf2 files
-pico_add_extra_outputs(${PROJECT_NAME})
-
-# Link to pico_stdlib (gpio, time, etc. functions)
-target_link_libraries(${PROJECT_NAME}
+# Exercise 1 executable
+add_executable(main_ex1
+        main_ex1.c
+        functions1.c
+        ${COMMON_SRCS}
+)
+pico_add_extra_outputs(main_ex1)
+target_link_libraries(main_ex1
         pico_stdlib
         hardware_i2c
         hardware_gpio
+)
+pico_enable_stdio_usb(main_ex1 0)
+pico_enable_stdio_uart(main_ex1 1)
+
+# Exercise 2 executable
+add_executable(main_ex2
+        main_ex2.c
+        functions2.c
+        ${COMMON_SRCS}
 
 )
 
-# Enable usb output, disable uart output
-pico_enable_stdio_usb(${PROJECT_NAME} 0)
-pico_enable_stdio_uart(${PROJECT_NAME} 1)
+pico_add_extra_outputs(main_ex2)
+target_link_libraries(main_ex2
+        pico_stdlib
+        hardware_i2c
+        hardware_gpio
+)
+pico_enable_stdio_usb(main_ex2 0)
+pico_enable_stdio_uart(main_ex2 1)
+
